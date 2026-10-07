@@ -6,6 +6,8 @@
 
 公開はGitHub Actionsの `Publish to npm` が行います。`package.json` のバージョンを更新し、同じバージョンの `vX.Y.Z` タグをpushすると、ビルド・テスト後にnpmへ公開します。手動実行も可能です。認証にはリポジトリのActions secret `NPM_TOKEN` を使用します。同じバージョンの再公開はできません。
 
+npm側でステージ公開になった場合は、所有者がnpmのStaged Packagesで2FA承認する必要があります。承認なしで自動公開するには、npmのパッケージ設定でGitHub ActionsのTrusted Publisherを `Nyaitter / NyaitterIME / publish.yml` に設定してください。ワークフローはOIDC用の権限も設定済みです。
+
 ```js
 const { convert, toHiragana, Japanizer } = require('nyaitter-ime');
 

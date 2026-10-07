@@ -33,3 +33,14 @@ jobs:
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Confirm package is publicly available
+        run: |
+          node --input-type=module <<'JS'
+          import pkg from './package.json' with { type: 'json' };
+          for (let attempt = 0; attempt < 6; attempt++) {
+            const response = await fetch(`https://registry.npmjs.org/${pkg.name}/${pkg.version}`);
+            if (response.ok) process.exit(0);
+            await new Promise(resolve => setTimeout(resolve, 10000));
+          }
+          throw new Error('Version is not live. Check npm Staged Packages for approval, or configure trusted publishing for this workflow.');
+          JS
