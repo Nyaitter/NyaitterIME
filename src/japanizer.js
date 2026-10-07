@@ -42,6 +42,8 @@ function chooseEnglishJapanese(run, ime, options) {
   for (let i = 0; i < run.length; i += 1) {
     if (!best[i]) continue;
     for (let end = i + 1; end <= run.length; end += 1) {
+      // Do not split an n+y syllable into terminal n and a separate ya/yu/yo.
+      if (run[end - 1] === 'n' && /^y[auo]/.test(run.slice(end))) continue;
       const part = run.slice(i, end);
       const kana = ime.romanizer.convert(part, options);
       const parsed = ime.converter.debug(kana, ime.dictionary, options);
