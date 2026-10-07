@@ -2,6 +2,10 @@
   "name": "nyaitter-ime",
   "version": "0.1.0",
   "description": "Local Japanese IME conversion and romaji-to-hiragana utilities",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nyaitter/NyaitterIME.git"
+  },
   "main": "src/index.js",
   "module": "src/index.mjs",
   "browser": "dist/nyaitter-ime.js",

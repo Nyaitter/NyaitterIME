@@ -4,6 +4,8 @@
 
 ## Node.js
 
+公開はGitHub Actionsの `Publish to npm` が行います。`package.json` のバージョンを更新し、同じバージョンの `vX.Y.Z` タグをpushすると、ビルド・テスト後にnpmへ公開します。手動実行も可能です。認証にはリポジトリのActions secret `NPM_TOKEN` を使用します。同じバージョンの再公開はできません。
+
 ```js
 const { convert, toHiragana, Japanizer } = require('nyaitter-ime');
 
