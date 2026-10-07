@@ -135,7 +135,8 @@ function chooseEnglishJapanese(run, ime, options) {
       const japaneseCost = parsed.cost + unknownPenalty + 180;
       update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
       if (part.length >= 2 && englishWords.has(part)) {
-        update(best, end, best[i].cost + 3900, best[i].text + run.slice(i, end));
+        // Prefer a dictionary-backed Japanese reading when both interpretations fit.
+        update(best, end, best[i].cost + 5900, best[i].text + run.slice(i, end));
       }
     }
   }
