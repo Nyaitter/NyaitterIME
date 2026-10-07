@@ -1,0 +1,81 @@
+'use strict';
+
+const { defaultRomanizer } = require('./romanizer');
+const { defaultConverter } = require('./converter');
+const englishWords = require('./romanizer/english-words');
+
+class Japanizer {
+  constructor(options = {}) {
+    this.romanizer = options.romanizer ?? defaultRomanizer;
+    this.converter = options.converter ?? defaultConverter;
+    this.dictionary = options.dictionary ?? null;
+  }
+
+  toHiragana(text, options = {}) {
+    return normalizeInputSymbols(convertMixedText(String(text ?? ''), this, options));
+  }
+
+  convert(text, options = {}) {
+    if (!this.dictionary) throw new Error('A dictionary is required');
+    const kana = this.toHiragana(text, options);
+    return this.converter.convert(kana, this.dictionary, options);
+  }
+
+  debug(text, options = {}) {
+    if (!this.dictionary) throw new Error('A dictionary is required');
+    const kana = this.toHiragana(text, options);
+    return { input: String(text ?? ''), kana, ...this.converter.debug(kana, this.dictionary, options) };
+  }
+}
+
+function convertMixedText(text, ime, options) {
+  if (!ime.dictionary || options.englishDetection === false) return ime.romanizer.convert(text, options);
+  return text.replace(/[A-Za-z]+/g, (run) => {
+    if (/[A-Z]/.test(run)) return ime.romanizer.convert(run, options);
+    return chooseEnglishJapanese(run, ime, options);
+  });
+}
+
+function chooseEnglishJapanese(run, ime, options) {
+  const best = Array(run.length + 1).fill(null);
+  best[0] = { cost: 0, text: '' };
+  for (let i = 0; i < run.length; i += 1) {
+    if (!best[i]) continue;
+    for (let end = i + 1; end <= run.length; end += 1) {
+      const part = run.slice(i, end);
+      const kana = ime.romanizer.convert(part, options);
+      const parsed = ime.converter.debug(kana, ime.dictionary, options);
+      const unknownPenalty = parsed.path.reduce((sum, edge) => sum + (edge.kind === 'identity' ? 6500 * edge.reading.length : 0), 0);
+      const japaneseCost = parsed.cost + unknownPenalty + 180;
+      update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
+      if (part.length >= 2 && englishWords.has(part)) {
+        update(best, end, best[i].cost + 3900, best[i].text + run.slice(i, end));
+      }
+    }
+  }
+  return best[run.length]?.text ?? ime.romanizer.convert(run, options);
+}
+
+function update(best, end, cost, text) {
+  if (!best[end] || cost < best[end].cost) best[end] = { cost, text };
+}
+
+function normalizeInputSymbols(text) {
+  return text.replace(/[,.!?;:()\[\]{}\-]/g, (symbol, offset, value) => {
+    const before = value.slice(0, offset).match(/[^\s]$/)?.[0] ?? '';
+    const after = value.slice(offset + 1).match(/^[^\s]/)?.[0] ?? '';
+    const beforeEnglish = /[A-Za-z0-9]/.test(before);
+    const afterEnglish = /[A-Za-z0-9]/.test(after);
+    const englishContext = symbol === '-'
+      ? beforeEnglish && afterEnglish
+      : (symbol === '(' || symbol === '[' || symbol === '{')
+        ? afterEnglish
+        : (symbol === ')' || symbol === ']' || symbol === '}')
+          ? beforeEnglish
+          : beforeEnglish || (!before && afterEnglish);
+    if (englishContext) return symbol;
+    return ({ ',': '、', '.': '。', '!': '！', '?': '？', ';': '；', ':': '：', '(': '（', ')': '）', '[': '［', ']': '］', '{': '｛', '}': '｝', '-': 'ー' })[symbol];
+  });
+}
+
+module.exports = { Japanizer, normalizeInputSymbols, convertMixedText };

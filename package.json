@@ -1,0 +1,48 @@
+{
+  "name": "nyaitter-ime",
+  "version": "0.1.0",
+  "description": "Local Japanese IME conversion and romaji-to-hiragana utilities",
+  "main": "src/index.js",
+  "module": "src/index.mjs",
+  "browser": "dist/nyaitter-ime.js",
+  "unpkg": "dist/nyaitter-ime.min.js",
+  "jsdelivr": "dist/nyaitter-ime.min.js",
+  "exports": {
+    ".": {
+      "require": "./src/index.js",
+      "import": "./src/index.mjs",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "data",
+    "tools/build-browser.js",
+    "tools/build-mozc-runtime-stream.js",
+    "test",
+    "README.md",
+    "LICENSE",
+    "LICENSE-MOZC",
+    "LICENSE-ESDB",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "node tools/build-browser.js",
+    "test": "node --test",
+    "update-dict": "node tools/build-mozc-runtime-stream.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "japanese",
+    "ime",
+    "romaji",
+    "kana",
+    "kanji",
+    "viterbi"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

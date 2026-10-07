@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NyaitterIME Test UI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+    textarea, output { width: 100%; box-sizing: border-box; font: inherit; }
+    textarea { min-height: 140px; padding: 12px; }
+    button { margin: 12px 0; padding: 8px 16px; font: inherit; cursor: pointer; }
+    output { display: block; min-height: 56px; padding: 12px; border: 1px solid #bbb; border-radius: 6px; white-space: pre-wrap; }
+    .hint { color: #666; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>NyaitterIME Test UI</h1>
+  <p class="hint">入力内容をリアルタイムにかな漢字変換し、第1候補だけ表示します。</p>
+  <textarea id="input">kyouhaiitenkidesune</textarea>
+  <button id="convert" type="button">変換</button>
+  <p id="status" class="hint">辞書を読み込み中...</p>
+  <output id="output"></output>
+
+  <script src="../dist/nyaitter-ime.js"></script>
+  <script>
+    const input = document.getElementById('input');
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+    let ready = false;
+    const convert = () => {
+      if (!ready) return;
+      output.textContent = NyaitterIME.convert(input.value);
+    };
+    document.getElementById('convert').addEventListener('click', convert);
+    input.addEventListener('input', convert);
+    input.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') convert();
+    });
+    NyaitterIME.ready.then(() => {
+      ready = true;
+      status.textContent = '辞書読み込み済み';
+      convert();
+    }).catch((error) => {
+      status.textContent = `辞書読み込み失敗: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
