@@ -2,6 +2,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { transformSync } = require('esbuild');
+const { Script } = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 const entry = path.join(root, 'src', 'browser.js');
@@ -44,10 +46,8 @@ const bundle = `${banner}\n(function(root,factory){if(typeof module==='object'&&
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(root, 'dist', 'nyaitter-ime.js'), bundle);
 
-const min = bundle
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/^\s*'use strict';\s*$/gm, '')
-  .replace(/\r?\n\s*/g, '')
-  .replace(/\s{2,}/g, ' ');
+const min = transformSync(bundle, { minify: true, target: 'es2020', legalComments: 'none' }).code;
+new Script(bundle);
+new Script(min);
 fs.writeFileSync(path.join(root, 'dist', 'nyaitter-ime.min.js'), `${banner}${min}`);
 console.log(`Built ${modules.size} modules`);

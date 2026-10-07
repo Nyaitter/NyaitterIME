@@ -41,6 +41,9 @@
     "kanji",
     "viterbi"
   ],
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18"
