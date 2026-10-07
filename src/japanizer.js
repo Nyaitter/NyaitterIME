@@ -9,16 +9,18 @@ class Japanizer {
     this.romanizer = options.romanizer ?? defaultRomanizer;
     this.converter = options.converter ?? defaultConverter;
     this.dictionary = options.dictionary ?? null;
+    this.ignoredTexts = options.ignoredTexts ?? [];
   }
 
   toHiragana(text, options = {}) {
-    return normalizeInputSymbols(convertMixedText(String(text ?? ''), this, options));
+    return mapUnignoredText(String(text ?? ''), options.ignoredTexts ?? this.ignoredTexts,
+      part => normalizeInputSymbols(convertMixedText(part, this, options)));
   }
 
   convert(text, options = {}) {
     if (!this.dictionary) throw new Error('A dictionary is required');
-    const kana = this.toHiragana(text, options);
-    return this.converter.convert(kana, this.dictionary, options);
+    return mapUnignoredText(String(text ?? ''), options.ignoredTexts ?? this.ignoredTexts,
+      part => this.converter.convert(normalizeInputSymbols(convertMixedText(part, this, options)), this.dictionary, options));
   }
 
   debug(text, options = {}) {
@@ -26,6 +28,21 @@ class Japanizer {
     const kana = this.toHiragana(text, options);
     return { input: String(text ?? ''), kana, ...this.converter.debug(kana, this.dictionary, options) };
   }
+}
+
+function mapUnignoredText(text, ignoredTexts, convert) {
+  const literals = [...new Set(Array.isArray(ignoredTexts) ? ignoredTexts.filter(x => typeof x === 'string' && x.length) : [])]
+    .sort((a, b) => b.length - a.length);
+  if (!literals.length) return convert(text);
+  let output = '', cursor = 0, plainStart = 0;
+  while (cursor < text.length) {
+    const literal = literals.find(value => text.startsWith(value, cursor));
+    if (!literal) { cursor += 1; continue; }
+    output += convert(text.slice(plainStart, cursor)) + literal;
+    cursor += literal.length;
+    plainStart = cursor;
+  }
+  return output + convert(text.slice(plainStart));
 }
 
 function convertMixedText(text, ime, options) {
