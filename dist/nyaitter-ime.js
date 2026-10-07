@@ -1,4 +1,4 @@
-/* NyaitterIME v0.1.2 | MIT */
+/* NyaitterIME v0.1.3 | MIT */
 (function(root,factory){if(typeof module==='object'&&module.exports){module.exports=factory();}else{root.NyaitterIME=factory();}})(typeof globalThis!=='undefined'?globalThis:this,function(){var modules={"src/browser.js":function(module,exports,__require){
 'use strict';
 
