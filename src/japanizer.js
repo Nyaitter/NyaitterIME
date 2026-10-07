@@ -20,7 +20,7 @@ class Japanizer {
   convert(text, options = {}) {
     if (!this.dictionary) throw new Error('A dictionary is required');
     return mapUnignoredText(String(text ?? ''), options.ignoredTexts ?? this.ignoredTexts,
-      part => this.converter.convert(normalizeInputSymbols(convertMixedText(part, this, options)), this.dictionary, options));
+      part => convertJapaneseSections(normalizeInputSymbols(convertMixedText(part, this, options)), this, options));
   }
 
   debug(text, options = {}) {
@@ -28,6 +28,13 @@ class Japanizer {
     const kana = this.toHiragana(text, options);
     return { input: String(text ?? ''), kana, ...this.converter.debug(kana, this.dictionary, options) };
   }
+}
+
+function convertJapaneseSections(kana, ime, options) {
+  // Literal English and hashtag markers must not affect Japanese connection costs.
+  return kana.split(/([A-Za-z]+|#)/).map(part =>
+    /^[A-Za-z]+$/.test(part) || part === '#' ? part : ime.converter.convert(part, ime.dictionary, options)
+  ).join('');
 }
 
 function mapUnignoredText(text, ignoredTexts, convert) {

@@ -1,6 +1,7 @@
 'use strict';
 
 const { RULES } = require('./rules');
+const englishWords = require('./english-words');
 
 const VOWELS = new Set(['a','i','u','e','o']);
 const JAPANESE_BOUNDARY_ROMAJI = ['wo', 'ha', 'ga', 'ni', 'de', 'to', 'no', 'mo'];
@@ -12,6 +13,11 @@ function findPreservedEnglishEnd(text, start) {
   while (runEnd < text.length && /[A-Za-z]/.test(text[runEnd])) runEnd += 1;
   const run = text.slice(start, runEnd);
   if (run.length < 2) return -1;
+  // Recognized English words end at their dictionary boundary, so appended
+  // Japanese romaji is not swallowed by capitalization-based preservation.
+  for (let length = run.length; length >= 2; length -= 1) {
+    if (englishWords.has(run.slice(0, length).toLowerCase())) return start + length;
+  }
 
   const uppercaseCount = [...run].filter((char) => /[A-Z]/.test(char)).length;
   const minPrefixLength = uppercaseCount >= 2 ? 2 : 4;
