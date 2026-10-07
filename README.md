@@ -29,6 +29,8 @@ ime.toHiragana('neko');
 
 ## Browser / CDN
 
+`customDictionary: [{ reading: 'にゃいったー', surface: 'Nyaitter' }]` を `convert`、`createSession`、または `Japanizer` のコンストラクタに渡すと、標準辞書に候補を追加できます。読みはひらがなまたはカタカナで指定します。登録語は優先され、`cost` で優先度を調整できます（小さいほど優先）。登録した表記そのものも変換せず保持します。
+
 連続入力には `const session = ime.createSession(options)` を使用し、`session.convert(text)` に更新後の入力全文を渡してください。共通の接頭部の判定経路と辞書評価を再利用します。`session.reset()` で保持した結果を破棄できます。ブラウザでは `NyaitterIME.ready` 完了後に `NyaitterIME.createSession(options)` を呼べます。
 
 `ignoredTexts` に文字列の配列を指定すると、一致する区間をかな・漢字・記号変換から除外します。`convert(text, { ignoredTexts: ['*', '#', '_', '~', '`'] })` のように呼び出すか、`new Japanizer({ ignoredTexts: ['OpenAI'] })` で初期設定できます。大文字小文字を区別し、重複する指定は最長一致を優先します。

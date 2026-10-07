@@ -1,4 +1,4 @@
-/* NyaitterIME v0.1.1 | MIT */
+/* NyaitterIME v0.1.2 | MIT */
 (function(root,factory){if(typeof module==='object'&&module.exports){module.exports=factory();}else{root.NyaitterIME=factory();}})(typeof globalThis!=='undefined'?globalThis:this,function(){var modules={"src/browser.js":function(module,exports,__require){
 'use strict';
 
@@ -95,6 +95,24 @@ module.exports = {
 const { defaultRomanizer } = __require("src/romanizer/index.js");
 const { defaultConverter } = __require("src/converter/index.js");
 const englishWords = __require("src/romanizer/english-words.js");
+const { Dictionary } = __require("src/dictionary/index.js");
+
+function withCustomDictionary(base, entries) {
+  if (!Array.isArray(entries)) throw new TypeError('customDictionary must be an array');
+  const custom = new Dictionary(entries.map(entry => {
+    const value = Array.isArray(entry) ? { reading: entry[0], surface: entry[1], cost: entry[2] } : entry;
+    if (!value || typeof value.reading !== 'string' || typeof value.surface !== 'string' || !value.reading || !value.surface) {
+      throw new TypeError('Custom entries require nonempty reading and surface strings');
+    }
+    const reading = value.reading.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+    return { ...value, reading, cost: value.cost ?? -10000, leftId: value.leftId ?? 5968, rightId: value.rightId ?? 5968 };
+  }));
+  const combined = Object.create(base);
+  combined.customReadings = [...new Set([...(base.customReadings ?? []), ...custom.byReading.keys()])];
+  combined.maxReadingLength = Math.max(base.maxReadingLength, custom.maxReadingLength);
+  combined.lookup = reading => [...custom.lookup(reading), ...base.lookup(reading)];
+  return combined;
+}
 
 class Japanizer {
   constructor(options = {}) {
@@ -102,20 +120,37 @@ class Japanizer {
     this.converter = options.converter ?? defaultConverter;
     this.dictionary = options.dictionary ?? null;
     this.ignoredTexts = options.ignoredTexts ?? [];
+    if (options.customDictionary) {
+      if (!this.dictionary) throw new Error('A base dictionary is required');
+      this.dictionary = withCustomDictionary(this.dictionary, options.customDictionary);
+      this.ignoredTexts = [...this.ignoredTexts, ...options.customDictionary.map(e => Array.isArray(e) ? e[1] : e.surface)];
+    }
   }
 
   toHiragana(text, options = {}) {
+    if (options.customDictionary) {
+      const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
+      return scoped.toHiragana(text, { ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
+    }
     return mapUnignoredText(String(text ?? ''), options.ignoredTexts ?? this.ignoredTexts,
       part => normalizeInputSymbols(convertMixedText(part, this, options)));
   }
 
   convert(text, options = {}) {
+    if (options.customDictionary) {
+      const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
+      return scoped.convert(text, { ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
+    }
     if (!this.dictionary) throw new Error('A dictionary is required');
     return mapUnignoredText(String(text ?? ''), options.ignoredTexts ?? this.ignoredTexts,
       part => convertJapaneseSections(normalizeInputSymbols(convertMixedText(part, this, options)), this, options));
   }
 
   createSession(options = {}) {
+    if (options.customDictionary) {
+      const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
+      return scoped.createSession({ ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
+    }
     const cache = { run: '', best: [], analyses: new Map(), outputs: new Map() };
     const sessionOptions = { ...options, _incrementalCache: cache };
     return {
@@ -125,6 +160,10 @@ class Japanizer {
   }
 
   debug(text, options = {}) {
+    if (options.customDictionary) {
+      const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
+      return scoped.debug(text, { ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
+    }
     if (!this.dictionary) throw new Error('A dictionary is required');
     const kana = this.toHiragana(text, options);
     return { input: String(text ?? ''), kana, ...this.converter.debug(kana, this.dictionary, options) };
@@ -155,10 +194,28 @@ function mapUnignoredText(text, ignoredTexts, convert) {
 
 function convertMixedText(text, ime, options) {
   if (!ime.dictionary || options.englishDetection === false) return ime.romanizer.convert(text, options);
-  return text.replace(/[A-Za-z]+/g, (run) => {
+  const convertPlain = value => value.replace(/[A-Za-z]+/g, (run) => {
     if (/[A-Z]/.test(run)) return ime.romanizer.convert(run, options);
     return chooseEnglishJapanese(run, ime, options);
   });
+  const readings = ime.dictionary.customReadings;
+  if (!readings?.length) return convertPlain(text);
+  const readingSet = new Set(readings);
+  const maxInputLength = Math.max(...readings.map(reading => reading.length)) * 4;
+  let output = '', plainStart = 0;
+  for (let start = 0; start < text.length; start += 1) {
+    let match = null;
+    for (let end = start + 1; end <= Math.min(text.length, start + maxInputLength); end += 1) {
+      const reading = normalizeInputSymbols(ime.romanizer.convert(text.slice(start, end)))
+        .replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+      if (readingSet.has(reading)) match = { end, reading };
+    }
+    if (!match) continue;
+    output += convertPlain(text.slice(plainStart, start)) + match.reading;
+    start = match.end - 1;
+    plainStart = match.end;
+  }
+  return output + convertPlain(text.slice(plainStart));
 }
 
 function chooseEnglishJapanese(run, ime, options) {
