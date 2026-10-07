@@ -31,8 +31,6 @@ jobs:
       - run: npm pack --dry-run
       - name: Publish package
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Confirm package is publicly available
         run: |
           node --input-type=module <<'JS'

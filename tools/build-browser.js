@@ -40,7 +40,7 @@ function visit(file) {
 
 const entryId = visit(entry);
 const moduleTable = [...modules.entries()].map(([id, source]) => `${JSON.stringify(id)}:function(module,exports,__require){\n${source}\n}`).join(',\n');
-const banner = '/* NyaitterIME v0.1.0 | MIT */';
+const banner = `/* NyaitterIME v${require('../package.json').version} | MIT */`;
 const bundle = `${banner}\n(function(root,factory){if(typeof module==='object'&&module.exports){module.exports=factory();}else{root.NyaitterIME=factory();}})(typeof globalThis!=='undefined'?globalThis:this,function(){var modules={${moduleTable}};var cache={};function __require(id){if(cache[id])return cache[id].exports;if(!modules[id])throw new Error('Module not found: '+id);var module={exports:{}};cache[id]=module;modules[id](module,module.exports,__require);return module.exports;}return __require(${JSON.stringify(entryId)});});\n`;
 
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
