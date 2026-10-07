@@ -23,6 +23,15 @@ class Japanizer {
       part => convertJapaneseSections(normalizeInputSymbols(convertMixedText(part, this, options)), this, options));
   }
 
+  createSession(options = {}) {
+    const cache = { run: '', best: [], analyses: new Map(), outputs: new Map() };
+    const sessionOptions = { ...options, _incrementalCache: cache };
+    return {
+      convert: text => this.convert(text, sessionOptions),
+      reset: () => { cache.run = ''; cache.best = []; cache.analyses.clear(); cache.outputs.clear(); },
+    };
+  }
+
   debug(text, options = {}) {
     if (!this.dictionary) throw new Error('A dictionary is required');
     const kana = this.toHiragana(text, options);
@@ -61,18 +70,35 @@ function convertMixedText(text, ime, options) {
 }
 
 function chooseEnglishJapanese(run, ime, options) {
+  const cache = options._incrementalCache;
+  if (cache?.outputs.has(run)) return cache.outputs.get(run);
   const best = Array(run.length + 1).fill(null);
   best[0] = { cost: 0, text: '' };
+  let shared = 0;
+  if (cache) {
+    while (shared < run.length && shared < cache.run.length && run[shared] === cache.run[shared]) shared += 1;
+  }
+  // Revisit the romanization boundary: a terminal n can become na/nya/nn.
+  const reusable = Math.max(0, shared - ime.romanizer.maxRuleLength);
+  for (let end = 1; end <= reusable; end += 1) best[end] = cache.best[end];
   for (let i = 0; i < run.length; i += 1) {
     if (!best[i]) continue;
-    for (let end = i + 1; end <= run.length; end += 1) {
+    for (let end = Math.max(i + 1, reusable + 1); end <= run.length; end += 1) {
       // Do not split an n+y syllable into terminal n and a separate ya/yu/yo.
       if (run[end - 1] === 'n' && /^y[auo]/.test(run.slice(end))) continue;
       const part = run.slice(i, end);
-      const kana = ime.romanizer.convert(part, options);
-      const parsed = ime.converter.debug(kana, ime.dictionary, options);
-      const unknownPenalty = parsed.path.reduce((sum, edge) => sum + (edge.kind === 'identity' ? 6500 * edge.reading.length : 0), 0);
-      const japaneseCost = parsed.cost + unknownPenalty + 180;
+      let analysis = cache?.analyses.get(part);
+      if (!analysis) {
+        const kana = ime.romanizer.convert(part, options);
+        const parsed = ime.converter.debug(kana, ime.dictionary, options);
+        const unknownPenalty = parsed.path.reduce((sum, edge) => sum + (edge.kind === 'identity' ? 6500 * edge.reading.length : 0), 0);
+        analysis = { kana, japaneseCost: parsed.cost + unknownPenalty + 180 };
+        if (cache) {
+          if (cache.analyses.size >= 8192) cache.analyses.delete(cache.analyses.keys().next().value);
+          cache.analyses.set(part, analysis);
+        }
+      }
+      const { kana, japaneseCost } = analysis;
       update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
       if (part.length >= 2 && englishWords.has(part)) {
         // Prefer a dictionary-backed Japanese reading when both interpretations fit.
@@ -80,7 +106,14 @@ function chooseEnglishJapanese(run, ime, options) {
       }
     }
   }
-  return best[run.length]?.text ?? ime.romanizer.convert(run, options);
+  const output = best[run.length]?.text ?? ime.romanizer.convert(run, options);
+  if (cache) {
+    cache.run = run;
+    cache.best = best;
+    if (cache.outputs.size >= 128) cache.outputs.delete(cache.outputs.keys().next().value);
+    cache.outputs.set(run, output);
+  }
+  return output;
 }
 
 function update(best, end, cost, text) {

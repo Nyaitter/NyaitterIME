@@ -40,6 +40,11 @@ function convert(text, options) {
   return defaultJapanizer.convert(text, options);
 }
 
+function createSession(options) {
+  if (!defaultJapanizer) throw new Error('Await NyaitterIME.ready first.');
+  return defaultJapanizer.createSession(options);
+}
+
 function toHiragana(text, options) {
   if (defaultJapanizer) return defaultJapanizer.toHiragana(text, options);
   return core.normalizeInputSymbols(core.defaultRomanizer.convert(text, options));
@@ -53,6 +58,7 @@ module.exports = {
   init,
   loadDictionary,
   convert,
+  createSession,
   toHiragana,
   ready,
   defaultDictionaryUrl

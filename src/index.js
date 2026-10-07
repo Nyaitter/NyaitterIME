@@ -36,10 +36,15 @@ function toHiragana(text, options) {
   return getDefaultJapanizer().toHiragana(text, options);
 }
 
+function createSession(options) {
+  return getDefaultJapanizer().createSession(options);
+}
+
 module.exports = {
   ...core,
   Japanizer,
   convert,
+  createSession,
   toHiragana,
   getDefaultDictionary,
   getDefaultJapanizer

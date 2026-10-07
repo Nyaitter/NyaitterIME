@@ -6,6 +6,7 @@ export const {
   Converter,
   Dictionary,
   convert,
+  createSession,
   toHiragana,
   defaultRomanizer,
   defaultConverter,
