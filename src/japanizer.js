@@ -79,9 +79,14 @@ class Japanizer {
 }
 
 function convertJapaneseSections(kana, ime, options) {
-  // Literal English and hashtag markers must not affect Japanese connection costs.
-  return kana.split(/([A-Za-z]+|#)/).map(part =>
-    /^[A-Za-z]+$/.test(part) || part === '#' ? part : ime.converter.convert(part, ime.dictionary, options)
+  // Hashtag markers still delimit fragments, but literal Latin spans stay
+  // inside the conversion: the converter gives them identity edges with
+  // loanword-noun ids, so the surrounding Japanese keeps its connection
+  // context. Splitting Latin out made every neighbouring fragment look like
+  // a standalone sentence (BOS/EOS penalties, no left context), which is
+  // what let e.g. a した after a Latin word degrade to the noun 下.
+  return kana.split(/(#)/).map(part =>
+    part === '#' ? part : ime.converter.convert(part, ime.dictionary, options)
   ).join('');
 }
 
@@ -157,7 +162,16 @@ function chooseEnglishJapanese(run, ime, options) {
       }
       const { kana, japaneseCost } = analysis;
       update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
-      if (part.length >= 2 && englishWords.has(part)) {
+      // Honour an English word at a run boundary. An internal match whose
+      // romaji reading parses cleanly (boo inside kiiboodo) is almost always
+      // part of a Japanese reading, and treating it as English prevented
+      // loanword conversion. But an internal match whose reading cannot be
+      // parsed cleanly (github, push: consonant clusters leave ASCII
+      // residue) is not Japanese at all; recognise it as English anywhere in
+      // the run and let the cost competition decide.
+      const atBoundary = i === 0 || end === run.length;
+      const unparseable = /[A-Za-z]/.test(kana);
+      if (part.length >= 2 && englishWords.has(part) && (atBoundary || unparseable)) {
         // Prefer a dictionary-backed Japanese reading when both interpretations fit.
         update(best, end, best[i].cost + 5900, best[i].text + run.slice(i, end));
       }
