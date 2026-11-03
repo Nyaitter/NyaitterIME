@@ -39,7 +39,7 @@ import { convert, toHiragana } from 'nyaitter-ime';
 ### ブラウザ / CDN
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/nyaitter-ime@0.1.3/dist/nyaitter-ime.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nyaitter-ime@0.1.4/dist/nyaitter-ime.min.js"></script>
 <script>
   NyaitterIME.ready.then(() => {
     console.log(NyaitterIME.convert('kyouhaiitenkidesune'));
