@@ -550,6 +550,71 @@ function foldLongVowels(reading) {
   return folded;
 }
 
+const DAKUTEN_GROUPS = [
+  ['か', 'が'], ['き', 'ぎ'], ['く', 'ぐ'], ['け', 'げ'], ['こ', 'ご'],
+  ['さ', 'ざ'], ['し', 'じ'], ['す', 'ず'], ['せ', 'ぜ'], ['そ', 'ぞ'],
+  ['た', 'だ'], ['ち', 'ぢ'], ['つ', 'づ'], ['て', 'で'], ['と', 'ど'],
+  ['は', 'ば', 'ぱ'], ['ひ', 'び', 'ぴ'], ['ふ', 'ぶ', 'ぷ'], ['へ', 'べ', 'ぺ'], ['ほ', 'ぼ', 'ぽ'],
+  ['う', 'ゔ'],
+];
+const DAKUTEN_ALTERNATIVES = new Map();
+for (const group of DAKUTEN_GROUPS) {
+  for (const char of group) {
+    DAKUTEN_ALTERNATIVES.set(char, group.filter((c) => c !== char));
+  }
+}
+// Dakuten/handakuten cannot be typed at all on some input surfaces (e.g.
+// radial kana input), while Mozc readings carry them (てんぷら). Variants
+// with them toggled are tried only when the exact reading is unknown, the
+// same fallback policy as foldLongVowels, or when its cheapest entry is
+// still in the name/rare-word cost range below: あめた exists only as the
+// names 雨田/飴田, while the user means 雨だ (reading あめだ). A reading
+// that exists as an ordinary word keeps its own words (かんし stays 監視,
+// かくせい stays 覚醒). Each toggled kana costs extra so fewer toggles
+// win among the variants themselves.
+const DAKUTEN_VARIANT_COST = 1200;
+const DAKUTEN_FALLBACK_EXACT_COST = 6000;
+const MAX_DAKUTEN_VARIANTS = 32;
+
+function dakutenVariants(reading) {
+  const chars = [...reading];
+  const positions = [];
+  for (let i = 0; i < chars.length; i += 1) {
+    if (DAKUTEN_ALTERNATIVES.has(chars[i])) positions.push(i);
+  }
+  if (positions.length === 0) return [];
+  const variants = [];
+  if (positions.length > 6) {
+    // Too many combinations to enumerate; single toggles only.
+    for (const pos of positions) {
+      for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
+        const next = chars.slice();
+        next[pos] = alt;
+        variants.push({ reading: next.join(''), toggles: 1 });
+      }
+    }
+    return variants.slice(0, MAX_DAKUTEN_VARIANTS);
+  }
+  const walk = (pi, current, toggles) => {
+    if (pi === positions.length) {
+      if (toggles > 0) variants.push({ reading: current.join(''), toggles });
+      return;
+    }
+    const pos = positions[pi];
+    walk(pi + 1, current, toggles);
+    for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
+      const next = current.slice();
+      next[pos] = alt;
+      walk(pi + 1, next, toggles + 1);
+    }
+  };
+  walk(0, chars, 0);
+  // Fewer toggles are cheaper, so order by toggles before applying the cap:
+  // the cap must never drop a low-toggle variant in favour of a costly one.
+  variants.sort((a, b) => a.toggles - b.toggles);
+  return variants.slice(0, MAX_DAKUTEN_VARIANTS);
+}
+
 function isAscii(char) {
   if (!char) return false;
   const code = char.charCodeAt(0);
@@ -569,6 +634,27 @@ function buildEdges(text, dictionary, position) {
     if (candidates.length === 0) {
       const folded = foldLongVowels(reading);
       if (folded !== reading) candidates = dictionary.lookup(folded);
+    }
+    // A reading typed without dakuten/handakuten (てんふら) should still
+    // reach the voiced dictionary word (てんぷら). Only when the exact
+    // reading is unknown, like the long-vowel fallback above, or merely
+    // name/rare-word class as described at DAKUTEN_FALLBACK_EXACT_COST.
+    const cheapestExact = candidates.reduce(
+      (min, candidate) => Math.min(min, candidate.cost ?? 1000), Infinity);
+    if (reading.length >= 2 && cheapestExact >= DAKUTEN_FALLBACK_EXACT_COST) {
+      // The same word can surface from several variants; keep the cheapest.
+      const bestByKey = new Map();
+      for (const variant of dakutenVariants(reading)) {
+        for (const candidate of dictionary.lookup(variant.reading)) {
+          const key = `${candidate.surface}|${candidate.leftId}|${candidate.rightId}`;
+          const cost = (candidate.cost ?? 1000) + DAKUTEN_VARIANT_COST * variant.toggles;
+          const existing = bestByKey.get(key);
+          if (!existing || cost < existing.cost) bestByKey.set(key, { ...candidate, cost });
+        }
+      }
+      // lookup() returns the dictionary's own (cached) array; build a new
+      // array instead of pushing into it, or later conversions would drift.
+      if (bestByKey.size > 0) candidates = [...candidates, ...bestByKey.values()];
     }
     for (const candidate of candidates) {
       const wordCost = candidate.cost ?? 1000;
