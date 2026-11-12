@@ -1,0 +1,1 @@
+{"name": "nyaitter-ime", "include": ["dist/nyaitter-ime.min.js", "data/nyaitter-ime-core.bin.gz"]}
