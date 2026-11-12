@@ -44,3 +44,28 @@ jobs:
           }
           throw new Error('Version is not live after 10 minutes. Check npm processing status or Staged Packages.');
           JS
+
+  nap-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check out NAP CLI
+        uses: actions/checkout@v4
+        with:
+          repository: Nyaitter/NAP
+          path: .nap-cli
+      - name: Set git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Publish to NAP
+        run: node .nap-cli/cli.js publish
