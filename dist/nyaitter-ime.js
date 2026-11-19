@@ -1,4 +1,4 @@
-/* NyaitterIME v0.1.4 | MIT */
+/* NyaitterIME v0.1.5 | MIT */
 (function(root,factory){if(typeof module==='object'&&module.exports){module.exports=factory();}else{root.NyaitterIME=factory();}})(typeof globalThis!=='undefined'?globalThis:this,function(){var modules={"src/browser.js":function(module,exports,__require){
 'use strict';
 
@@ -151,11 +151,11 @@ class Japanizer {
       const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
       return scoped.createSession({ ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
     }
-    const cache = { run: '', best: [], analyses: new Map(), outputs: new Map() };
+    const cache = { outputs: new Map() };
     const sessionOptions = { ...options, _incrementalCache: cache };
     return {
       convert: text => this.convert(text, sessionOptions),
-      reset: () => { cache.run = ''; cache.best = []; cache.analyses.clear(); cache.outputs.clear(); },
+      reset: () => { cache.outputs.clear(); },
     };
   }
 
@@ -223,64 +223,66 @@ function convertMixedText(text, ime, options) {
   return output + convertPlain(text.slice(plainStart));
 }
 
+const MAX_ENGLISH_WORD_LENGTH = 24;
+
 function chooseEnglishJapanese(run, ime, options) {
   const cache = options._incrementalCache;
-  if (cache?.outputs.has(run)) return cache.outputs.get(run);
-  const best = Array(run.length + 1).fill(null);
-  best[0] = { cost: 0, text: '' };
-  let shared = 0;
-  if (cache) {
-    while (shared < run.length && shared < cache.run.length && run[shared] === cache.run[shared]) shared += 1;
-  }
-  // Revisit the romanization boundary: a terminal n can become na/nya/nn.
-  const reusable = Math.max(0, shared - ime.romanizer.maxRuleLength);
-  for (let end = 1; end <= reusable; end += 1) best[end] = cache.best[end];
-  for (let i = 0; i < run.length; i += 1) {
-    if (!best[i]) continue;
-    for (let end = Math.max(i + 1, reusable + 1); end <= run.length; end += 1) {
-      // Do not split an n+y syllable into terminal n and a separate ya/yu/yo.
-      if (run[end - 1] === 'n' && /^y[auo]/.test(run.slice(end))) continue;
-      const part = run.slice(i, end);
-      let analysis = cache?.analyses.get(part);
-      if (!analysis) {
-        const kana = ime.romanizer.convert(part, options);
-        const parsed = ime.converter.debug(kana, ime.dictionary, options);
-        const unknownPenalty = parsed.path.reduce((sum, edge) => sum + (edge.kind === 'identity' ? 6500 * edge.reading.length : 0), 0);
-        analysis = { kana, japaneseCost: parsed.cost + unknownPenalty + 180 };
-        if (cache) {
-          if (cache.analyses.size >= 8192) cache.analyses.delete(cache.analyses.keys().next().value);
-          cache.analyses.set(part, analysis);
-        }
-      }
-      const { kana, japaneseCost } = analysis;
-      update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
-      // Honour an English word at a run boundary. An internal match whose
-      // romaji reading parses cleanly (boo inside kiiboodo) is almost always
-      // part of a Japanese reading, and treating it as English prevented
-      // loanword conversion. But an internal match whose reading cannot be
-      // parsed cleanly (github, push: consonant clusters leave ASCII
-      // residue) is not Japanese at all; recognise it as English anywhere in
-      // the run and let the cost competition decide.
-      const atBoundary = i === 0 || end === run.length;
-      const unparseable = /[A-Za-z]/.test(kana);
-      if (part.length >= 2 && englishWords.has(part) && (atBoundary || unparseable)) {
-        // Prefer a dictionary-backed Japanese reading when both interpretations fit.
-        update(best, end, best[i].cost + 5900, best[i].text + run.slice(i, end));
-      }
+  const cached = cache?.outputs.get(run);
+  if (cached !== undefined) return cached;
+  // Romaji that reads as kana without leaving anything behind is Japanese;
+  // Latin must come from a span that cannot be read any other way.
+  const { kana, starts } = ime.romanizer.convertWithMap(run, options);
+  const spans = /[A-Za-z]/.test(kana) ? findEnglishSpans(run, kana, starts, ime, options) : [];
+  let output = kana;
+  if (spans.length > 0) {
+    output = '';
+    let cursor = 0;
+    for (const span of spans) {
+      output += ime.romanizer.convert(run.slice(cursor, span.start), options) + run.slice(span.start, span.end);
+      cursor = span.end;
     }
+    output += ime.romanizer.convert(run.slice(cursor), options);
   }
-  const output = best[run.length]?.text ?? ime.romanizer.convert(run, options);
   if (cache) {
-    cache.run = run;
-    cache.best = best;
     if (cache.outputs.size >= 128) cache.outputs.delete(cache.outputs.keys().next().value);
     cache.outputs.set(run, output);
   }
   return output;
 }
 
-function update(best, end, cost, text) {
-  if (!best[end] || cost < best[end].cost) best[end] = { cost, text };
+// Finds the word-list spans that cover the places where romanization left Latin
+// behind (github, push, python: consonant clusters no kana rule can read).
+function findEnglishSpans(run, kana, starts, ime, options) {
+  const regions = [];
+  for (let i = 0; i < kana.length; i += 1) {
+    if (!/[A-Za-z]/.test(kana[i])) continue;
+    const start = starts[i];
+    const end = Math.max(starts[i + 1] ?? run.length, start + 1);
+    const previous = regions[regions.length - 1];
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else regions.push({ start, end });
+  }
+
+  const spans = [];
+  for (const region of regions) {
+    let best = null;
+    const first = Math.max(0, region.start - MAX_ENGLISH_WORD_LENGTH + 1);
+    for (let start = first; start <= region.start; start += 1) {
+      if (best && start + best.length <= region.end) continue;
+      const last = Math.min(run.length, start + MAX_ENGLISH_WORD_LENGTH);
+      for (let end = last; end >= Math.max(region.end, start + 2); end -= 1) {
+        const part = run.slice(start, end);
+        if (!englishWords.has(part)) continue;
+        if (!/[A-Za-z]/.test(ime.romanizer.convert(part, options))) continue;
+        if (!best || end - start > best.length) best = { start, end, length: end - start };
+      }
+    }
+    if (!best) continue;
+    const previous = spans[spans.length - 1];
+    if (previous && best.start <= previous.end) previous.end = Math.max(previous.end, best.end);
+    else spans.push({ start: best.start, end: best.end });
+  }
+  return spans;
 }
 
 function normalizeInputSymbols(text) {
@@ -342,6 +344,94 @@ function findPreservedEnglishEnd(text, start) {
   return runEnd;
 }
 
+// Romanizes text, optionally recording the source index of every produced
+// character so callers can map kana positions back to romaji positions.
+function romanize(text, rules, maxRuleLength, starts) {
+  let out = '';
+  let i = 0;
+  const emit = starts
+    ? (chunk, from) => { out += chunk; for (let k = 0; k < chunk.length; k += 1) starts.push(from); }
+    : (chunk) => { out += chunk; };
+
+  while (i < text.length) {
+    const current = text[i];
+    const lower = current.toLowerCase();
+
+    const englishEnd = findPreservedEnglishEnd(text, i);
+    if (englishEnd > i) {
+      emit(text.slice(i, englishEnd), i);
+      i = englishEnd;
+      continue;
+    }
+
+    if (!/[a-z]/i.test(current)) {
+      emit(current, i);
+      i += 1;
+      continue;
+    }
+
+    const next = (text[i + 1] || '').toLowerCase();
+
+    // A capital letter starts a preserved English span. Do not let a
+    // romaji rule consume across that boundary (e.g. saikinOpenAI: nO must
+    // not be interpreted as "no").
+    if (lower === 'n' && /[A-Z]/.test(text[i + 1] || '')) {
+      emit('ん', i);
+      i += 1;
+      continue;
+    }
+
+    if (lower === 'n' && text[i + 1] === "'") {
+      emit('ん', i);
+      i += 2;
+      continue;
+    }
+
+    if (lower === 'n' && next === 'n') {
+      emit('ん', i);
+      const afterNext = (text[i + 2] || '').toLowerCase();
+      i += (VOWELS.has(afterNext) || afterNext === 'y') ? 1 : 2;
+      continue;
+    }
+
+    if (lower === 'n' && next && !VOWELS.has(next) && next !== 'y' && /[a-z]/.test(next)) {
+      emit('ん', i);
+      i += 1;
+      continue;
+    }
+
+    if (next && lower === next && /[bcdfghjkmprstvwxyz]/.test(lower) && lower !== 'n') {
+      emit('っ', i);
+      i += 1;
+      continue;
+    }
+
+    let matched = false;
+    for (let len = maxRuleLength; len >= 1; len -= 1) {
+      const rawToken = text.slice(i, i + len);
+      if (/[A-Z]/.test(rawToken.slice(1))) continue;
+      const token = rawToken.toLowerCase();
+      if (rules[token]) {
+        emit(rules[token], i);
+        i += len;
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      if (lower === 'n' && (!next || !/[a-z]/.test(next))) {
+        emit('ん', i);
+      } else {
+        emit(current, i);
+      }
+      i += 1;
+    }
+  }
+
+  return out;
+}
+
 class Romanizer {
   constructor(rules = RULES) {
     this.rules = rules;
@@ -349,93 +439,20 @@ class Romanizer {
   }
 
   convert(input) {
+    return romanize(String(input ?? ''), this.rules, this.maxRuleLength, null);
+  }
+
+  convertWithMap(input) {
     const text = String(input ?? '');
-    let out = '';
-    let i = 0;
-
-    while (i < text.length) {
-      const current = text[i];
-      const lower = current.toLowerCase();
-
-      const englishEnd = findPreservedEnglishEnd(text, i);
-      if (englishEnd > i) {
-        out += text.slice(i, englishEnd);
-        i = englishEnd;
-        continue;
-      }
-
-      if (!/[a-z]/i.test(current)) {
-        out += current;
-        i += 1;
-        continue;
-      }
-
-      const next = (text[i + 1] || '').toLowerCase();
-
-      // A capital letter starts a preserved English span. Do not let a
-      // romaji rule consume across that boundary (e.g. saikinOpenAI: nO must
-      // not be interpreted as "no").
-      if (lower === 'n' && /[A-Z]/.test(text[i + 1] || '')) {
-        out += 'ん';
-        i += 1;
-        continue;
-      }
-
-      if (lower === 'n' && text[i + 1] === "'") {
-        out += 'ん';
-        i += 2;
-        continue;
-      }
-
-      if (lower === 'n' && next === 'n') {
-        out += 'ん';
-        const afterNext = (text[i + 2] || '').toLowerCase();
-        i += (VOWELS.has(afterNext) || afterNext === 'y') ? 1 : 2;
-        continue;
-      }
-
-      if (lower === 'n' && next && !VOWELS.has(next) && next !== 'y' && /[a-z]/.test(next)) {
-        out += 'ん';
-        i += 1;
-        continue;
-      }
-
-      if (next && lower === next && /[bcdfghjkmprstvwxyz]/.test(lower) && lower !== 'n') {
-        out += 'っ';
-        i += 1;
-        continue;
-      }
-
-      let matched = false;
-      for (let len = this.maxRuleLength; len >= 1; len -= 1) {
-        const rawToken = text.slice(i, i + len);
-        if (/[A-Z]/.test(rawToken.slice(1))) continue;
-        const token = rawToken.toLowerCase();
-        if (this.rules[token]) {
-          out += this.rules[token];
-          i += len;
-          matched = true;
-          break;
-        }
-      }
-
-      if (!matched) {
-        if (lower === 'n' && (!next || !/[a-z]/.test(next))) {
-          out += 'ん';
-        } else {
-          out += current;
-        }
-        i += 1;
-      }
-    }
-
-    return out;
+    const starts = [];
+    const kana = romanize(text, this.rules, this.maxRuleLength, starts);
+    return { kana, starts, length: text.length };
   }
 }
 
 const defaultRomanizer = new Romanizer();
 
-module.exports = { Romanizer, defaultRomanizer };
+module.exports = { Romanizer, defaultRomanizer, romanize };
 
 },
 "src/romanizer/rules.js":function(module,exports,__require){
@@ -574,6 +591,11 @@ for (const group of DAKUTEN_GROUPS) {
 // win among the variants themselves.
 const DAKUTEN_VARIANT_COST = 1200;
 const DAKUTEN_FALLBACK_EXACT_COST = 6000;
+// The fallback exists for input surfaces without dakuten keys, so it only has
+// to reach word-sized readings; longer spans are segmentation work, and
+// enumerating their toggles costs far more than it can ever save.
+const MAX_DAKUTEN_READING_LENGTH = 8;
+const MAX_DAKUTEN_POSITIONS = 4;
 const MAX_DAKUTEN_VARIANTS = 32;
 
 function dakutenVariants(reading) {
@@ -582,37 +604,27 @@ function dakutenVariants(reading) {
   for (let i = 0; i < chars.length; i += 1) {
     if (DAKUTEN_ALTERNATIVES.has(chars[i])) positions.push(i);
   }
-  if (positions.length === 0) return [];
+  if (positions.length === 0 || positions.length > MAX_DAKUTEN_POSITIONS) return [];
   const variants = [];
-  if (positions.length > 6) {
-    // Too many combinations to enumerate; single toggles only.
-    for (const pos of positions) {
-      for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
-        const next = chars.slice();
-        next[pos] = alt;
-        variants.push({ reading: next.join(''), toggles: 1 });
-      }
-    }
-    return variants.slice(0, MAX_DAKUTEN_VARIANTS);
-  }
-  const walk = (pi, current, toggles) => {
-    if (pi === positions.length) {
-      if (toggles > 0) variants.push({ reading: current.join(''), toggles });
+  const walk = (index, toggles) => {
+    if (index === positions.length) {
+      if (toggles > 0) variants.push({ reading: chars.join(''), toggles });
       return;
     }
-    const pos = positions[pi];
-    walk(pi + 1, current, toggles);
-    for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
-      const next = current.slice();
-      next[pos] = alt;
-      walk(pi + 1, next, toggles + 1);
+    const position = positions[index];
+    const original = chars[position];
+    walk(index + 1, toggles);
+    for (const alternative of DAKUTEN_ALTERNATIVES.get(original)) {
+      chars[position] = alternative;
+      walk(index + 1, toggles + 1);
     }
+    chars[position] = original;
   };
-  walk(0, chars, 0);
+  walk(0, 0);
   // Fewer toggles are cheaper, so order by toggles before applying the cap:
   // the cap must never drop a low-toggle variant in favour of a costly one.
   variants.sort((a, b) => a.toggles - b.toggles);
-  return variants.slice(0, MAX_DAKUTEN_VARIANTS);
+  return variants.length > MAX_DAKUTEN_VARIANTS ? variants.slice(0, MAX_DAKUTEN_VARIANTS) : variants;
 }
 
 function isAscii(char) {
@@ -641,7 +653,7 @@ function buildEdges(text, dictionary, position) {
     // name/rare-word class as described at DAKUTEN_FALLBACK_EXACT_COST.
     const cheapestExact = candidates.reduce(
       (min, candidate) => Math.min(min, candidate.cost ?? 1000), Infinity);
-    if (reading.length >= 2 && cheapestExact >= DAKUTEN_FALLBACK_EXACT_COST) {
+    if (reading.length >= 2 && reading.length <= MAX_DAKUTEN_READING_LENGTH && cheapestExact >= DAKUTEN_FALLBACK_EXACT_COST) {
       // The same word can surface from several variants; keep the cheapest.
       const bestByKey = new Map();
       for (const variant of dakutenVariants(reading)) {
@@ -700,9 +712,9 @@ function buildEdges(text, dictionary, position) {
   return edges;
 }
 
-function connectionCost(previous, current, dictionary) {
+function connectionCost(previousRightId, currentLeftId, dictionary) {
   if (typeof dictionary.connectionCost === 'function') {
-    return dictionary.connectionCost(previous?.rightId ?? 0, current.leftId ?? 0) || 0;
+    return dictionary.connectionCost(previousRightId, currentLeftId) || 0;
   }
   return 0;
 }
@@ -713,41 +725,57 @@ function viterbi(text, dictionary) {
   // The future connection cost depends on the previous node's rightId, so a
   // single best path per character position is insufficient. Keep the best
   // state for every rightId at each position.
-  const bestAt = Array.from({ length: text.length + 1 }, () => new Map());
-  bestAt[0].set(0, { cost: 0, previous: null, edge: null, last: { rightId: 0 } });
+  const length = text.length;
+  const rightSize = Number.isInteger(dictionary.rightSize) && dictionary.rightSize > 0 ? dictionary.rightSize : 4096;
+  const lists = Array.from({ length: length + 1 }, () => []);
+  const marks = new Uint32Array(rightSize);
+  const nodes = new Array(rightSize);
+  const start = { cost: 0, previous: null, edge: null, rightId: 0 };
+  lists[0].push(start);
+  marks[0] = 1;
+  nodes[0] = start;
 
-  for (let position = 0; position < text.length; position += 1) {
-    const states = bestAt[position];
-    if (states.size === 0) continue;
-
+  for (let position = 0; position < length; position += 1) {
+    const states = lists[position];
+    const stateCount = states.length;
+    if (stateCount === 0) continue;
     for (const edge of buildEdges(text, dictionary, position)) {
       let bestPrevious = null;
       let bestScore = Infinity;
-      for (const state of states.values()) {
-        const score = state.cost + edge.cost + connectionCost(state.last, edge, dictionary);
+      const edgeCost = edge.cost;
+      for (let i = 0; i < stateCount; i += 1) {
+        const state = states[i];
+        const score = state.cost + edgeCost + connectionCost(state.rightId, edge.leftId, dictionary);
         if (score < bestScore) {
           bestScore = score;
           bestPrevious = state;
         }
       }
-      const existing = bestAt[edge.end].get(edge.rightId);
-      if (bestPrevious && (!existing || bestScore < existing.cost)) {
-        bestAt[edge.end].set(edge.rightId, {
-          cost: bestScore,
-          previous: bestPrevious,
-          edge,
-          last: edge
-        });
+      if (bestPrevious === null) continue;
+      const rightId = edge.rightId;
+      const endMark = edge.end + 1;
+      if (marks[rightId] === endMark) {
+        const existing = nodes[rightId];
+        if (bestScore < existing.cost) {
+          existing.cost = bestScore;
+          existing.previous = bestPrevious;
+          existing.edge = edge;
+        }
+      } else {
+        marks[rightId] = endMark;
+        const node = { cost: bestScore, previous: bestPrevious, edge, rightId };
+        nodes[rightId] = node;
+        lists[edge.end].push(node);
       }
     }
   }
 
   let result = null;
   let finalCost = Infinity;
-  for (const state of bestAt[text.length].values()) {
-    const eosCost = state.cost + (typeof dictionary.connectionCost === 'function'
-      ? dictionary.connectionCost(state.last?.rightId ?? 0, 0)
-      : 0);
+  const finals = lists[length];
+  for (let i = 0; i < finals.length; i += 1) {
+    const state = finals[i];
+    const eosCost = state.cost + connectionCost(state.rightId, 0, dictionary);
     if (eosCost < finalCost) {
       finalCost = eosCost;
       result = state;
@@ -797,6 +825,9 @@ const MAGIC_V2 = 'NYIME002';
 const MAGIC_V3 = 'NYIME003';
 const MAGIC_V4 = 'NYIME004';
 const MAGIC_V5 = 'NYIME005';
+const HASH_OFFSET = 0x811c9dc5;
+const HASH_PRIME = 0x01000193;
+const CACHE_LIMIT = 16384;
 let decoder = null;
 
 function decodeUtf8(bytes) {
@@ -871,7 +902,13 @@ class RuntimeDictionary {
     }
     this.index = this.version >= 5 ? null : new Map();
     this.cache = new Map();
+    this.hash = null;
+    this.hashMask = 0;
+    this.groupOffsets = null;
+    this.encoder = null;
+    this.encoded = null;
     if (this.version < 5) this.#buildIndex();
+    else this.#buildHashIndex();
   }
 
   #buildIndex() {
@@ -897,8 +934,43 @@ class RuntimeDictionary {
     if (this.version >= 3) this.groupCount = groups;
   }
 
+  #buildHashIndex() {
+    let size = 1;
+    while (size < this.groupCount * 1.7) size <<= 1;
+    const table = new Uint32Array(size);
+    const mask = size - 1;
+    const { bytes, view } = this;
+    const { groupCount, groupOffsetsOffset, lexiconOffset } = this;
+    let offsets = null;
+    if (groupOffsetsOffset % 4 === 0) offsets = new Uint32Array(bytes.buffer, bytes.byteOffset + groupOffsetsOffset, groupCount);
+    for (let i = 0; i < groupCount; i += 1) {
+      const relative = offsets ? offsets[i] : view.getUint32(groupOffsetsOffset + i * 4, true);
+      const offset = lexiconOffset + relative;
+      const length = view.getUint16(offset, true);
+      const end = offset + 4 + length;
+      let hash = HASH_OFFSET;
+      let b = offset + 4;
+      for (; b + 3 < end; b += 4) {
+        hash ^= bytes[b] | (bytes[b + 1] << 8) | (bytes[b + 2] << 16) | (bytes[b + 3] << 24);
+        hash = Math.imul(hash, HASH_PRIME);
+      }
+      for (; b < end; b += 1) {
+        hash ^= bytes[b];
+        hash = Math.imul(hash, HASH_PRIME);
+      }
+      hash ^= length;
+      let slot = hash >>> 0 & mask;
+      while (table[slot] !== 0) slot = slot + 1 & mask;
+      table[slot] = i + 1;
+    }
+    this.hash = table;
+    this.hashMask = mask;
+    this.groupOffsets = offsets;
+  }
+
   lookup(reading) {
-    if (this.cache.has(reading)) return this.cache.get(reading);
+    const cached = this.cache.get(reading);
+    if (cached !== undefined) return cached;
     const groupOffset = this.version >= 5 ? this.#findGroupOffset(reading) : this.index.get(reading);
     if (groupOffset === undefined) {
       this.#cache(reading, []);
@@ -926,11 +998,55 @@ class RuntimeDictionary {
   }
 
   #cache(reading, candidates) {
-    if (this.cache.size >= 4096) this.cache.clear();
+    if (this.cache.size >= CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value);
     this.cache.set(reading, candidates);
   }
 
   #findGroupOffset(reading) {
+    if (this.hash && typeof TextEncoder === 'function') return this.#findGroupOffsetHashed(reading);
+    return this.#findGroupOffsetBinary(reading);
+  }
+
+  #findGroupOffsetHashed(reading) {
+    if (!this.encoder) this.encoder = new TextEncoder();
+    let buffer = this.encoded;
+    if (!buffer || buffer.length < reading.length * 3) {
+      buffer = new Uint8Array(reading.length * 3);
+      this.encoded = buffer;
+    }
+    const length = this.encoder.encodeInto(reading, buffer).written;
+    if (length === 0) return undefined;
+    let hash = HASH_OFFSET;
+    let b = 0;
+    for (; b + 3 < length; b += 4) {
+      hash ^= buffer[b] | (buffer[b + 1] << 8) | (buffer[b + 2] << 16) | (buffer[b + 3] << 24);
+      hash = Math.imul(hash, HASH_PRIME);
+    }
+    for (; b < length; b += 1) {
+      hash ^= buffer[b];
+      hash = Math.imul(hash, HASH_PRIME);
+    }
+    hash ^= length;
+    const { bytes, view, lexiconOffset, groupOffsets } = this;
+    let slot = hash >>> 0 & this.hashMask;
+    for (;;) {
+      const entry = this.hash[slot];
+      if (entry === 0) return undefined;
+      const relative = groupOffsets ? groupOffsets[entry - 1] : view.getUint32(this.groupOffsetsOffset + (entry - 1) * 4, true);
+      const offset = lexiconOffset + relative;
+      const readingLength = view.getUint16(offset, true);
+      if (readingLength === length) {
+        let same = true;
+        for (let b = 0; b < length; b += 1) {
+          if (bytes[offset + 4 + b] !== buffer[b]) { same = false; break; }
+        }
+        if (same) return offset;
+      }
+      slot = slot + 1 & this.hashMask;
+    }
+  }
+
+  #findGroupOffsetBinary(reading) {
     let low = 0;
     let high = this.groupCount - 1;
     while (low <= high) {

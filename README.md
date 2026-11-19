@@ -118,7 +118,7 @@ convert('text#tag', {
 
 ### 連続入力
 
-入力中の文字列を繰り返し変換する場合は `createSession()` を使います。前回までの解析結果を再利用するため、長い入力でも処理量を抑えられます。
+入力中の文字列を繰り返し変換する場合は `createSession()` を使います。
 
 ```js
 const { createSession } = require('nyaitter-ime');

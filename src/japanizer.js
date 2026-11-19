@@ -59,11 +59,11 @@ class Japanizer {
       const scoped = new Japanizer({ ...options, dictionary: this.dictionary });
       return scoped.createSession({ ...options, customDictionary: null, ignoredTexts: scoped.ignoredTexts });
     }
-    const cache = { run: '', best: [], analyses: new Map(), outputs: new Map() };
+    const cache = { outputs: new Map() };
     const sessionOptions = { ...options, _incrementalCache: cache };
     return {
       convert: text => this.convert(text, sessionOptions),
-      reset: () => { cache.run = ''; cache.best = []; cache.analyses.clear(); cache.outputs.clear(); },
+      reset: () => { cache.outputs.clear(); },
     };
   }
 
@@ -131,64 +131,66 @@ function convertMixedText(text, ime, options) {
   return output + convertPlain(text.slice(plainStart));
 }
 
+const MAX_ENGLISH_WORD_LENGTH = 24;
+
 function chooseEnglishJapanese(run, ime, options) {
   const cache = options._incrementalCache;
-  if (cache?.outputs.has(run)) return cache.outputs.get(run);
-  const best = Array(run.length + 1).fill(null);
-  best[0] = { cost: 0, text: '' };
-  let shared = 0;
-  if (cache) {
-    while (shared < run.length && shared < cache.run.length && run[shared] === cache.run[shared]) shared += 1;
-  }
-  // Revisit the romanization boundary: a terminal n can become na/nya/nn.
-  const reusable = Math.max(0, shared - ime.romanizer.maxRuleLength);
-  for (let end = 1; end <= reusable; end += 1) best[end] = cache.best[end];
-  for (let i = 0; i < run.length; i += 1) {
-    if (!best[i]) continue;
-    for (let end = Math.max(i + 1, reusable + 1); end <= run.length; end += 1) {
-      // Do not split an n+y syllable into terminal n and a separate ya/yu/yo.
-      if (run[end - 1] === 'n' && /^y[auo]/.test(run.slice(end))) continue;
-      const part = run.slice(i, end);
-      let analysis = cache?.analyses.get(part);
-      if (!analysis) {
-        const kana = ime.romanizer.convert(part, options);
-        const parsed = ime.converter.debug(kana, ime.dictionary, options);
-        const unknownPenalty = parsed.path.reduce((sum, edge) => sum + (edge.kind === 'identity' ? 6500 * edge.reading.length : 0), 0);
-        analysis = { kana, japaneseCost: parsed.cost + unknownPenalty + 180 };
-        if (cache) {
-          if (cache.analyses.size >= 8192) cache.analyses.delete(cache.analyses.keys().next().value);
-          cache.analyses.set(part, analysis);
-        }
-      }
-      const { kana, japaneseCost } = analysis;
-      update(best, end, best[i].cost + japaneseCost, best[i].text + kana);
-      // Honour an English word at a run boundary. An internal match whose
-      // romaji reading parses cleanly (boo inside kiiboodo) is almost always
-      // part of a Japanese reading, and treating it as English prevented
-      // loanword conversion. But an internal match whose reading cannot be
-      // parsed cleanly (github, push: consonant clusters leave ASCII
-      // residue) is not Japanese at all; recognise it as English anywhere in
-      // the run and let the cost competition decide.
-      const atBoundary = i === 0 || end === run.length;
-      const unparseable = /[A-Za-z]/.test(kana);
-      if (part.length >= 2 && englishWords.has(part) && (atBoundary || unparseable)) {
-        // Prefer a dictionary-backed Japanese reading when both interpretations fit.
-        update(best, end, best[i].cost + 5900, best[i].text + run.slice(i, end));
-      }
+  const cached = cache?.outputs.get(run);
+  if (cached !== undefined) return cached;
+  // Romaji that reads as kana without leaving anything behind is Japanese;
+  // Latin must come from a span that cannot be read any other way.
+  const { kana, starts } = ime.romanizer.convertWithMap(run, options);
+  const spans = /[A-Za-z]/.test(kana) ? findEnglishSpans(run, kana, starts, ime, options) : [];
+  let output = kana;
+  if (spans.length > 0) {
+    output = '';
+    let cursor = 0;
+    for (const span of spans) {
+      output += ime.romanizer.convert(run.slice(cursor, span.start), options) + run.slice(span.start, span.end);
+      cursor = span.end;
     }
+    output += ime.romanizer.convert(run.slice(cursor), options);
   }
-  const output = best[run.length]?.text ?? ime.romanizer.convert(run, options);
   if (cache) {
-    cache.run = run;
-    cache.best = best;
     if (cache.outputs.size >= 128) cache.outputs.delete(cache.outputs.keys().next().value);
     cache.outputs.set(run, output);
   }
   return output;
 }
 
-function update(best, end, cost, text) {
-  if (!best[end] || cost < best[end].cost) best[end] = { cost, text };
+// Finds the word-list spans that cover the places where romanization left Latin
+// behind (github, push, python: consonant clusters no kana rule can read).
+function findEnglishSpans(run, kana, starts, ime, options) {
+  const regions = [];
+  for (let i = 0; i < kana.length; i += 1) {
+    if (!/[A-Za-z]/.test(kana[i])) continue;
+    const start = starts[i];
+    const end = Math.max(starts[i + 1] ?? run.length, start + 1);
+    const previous = regions[regions.length - 1];
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else regions.push({ start, end });
+  }
+
+  const spans = [];
+  for (const region of regions) {
+    let best = null;
+    const first = Math.max(0, region.start - MAX_ENGLISH_WORD_LENGTH + 1);
+    for (let start = first; start <= region.start; start += 1) {
+      if (best && start + best.length <= region.end) continue;
+      const last = Math.min(run.length, start + MAX_ENGLISH_WORD_LENGTH);
+      for (let end = last; end >= Math.max(region.end, start + 2); end -= 1) {
+        const part = run.slice(start, end);
+        if (!englishWords.has(part)) continue;
+        if (!/[A-Za-z]/.test(ime.romanizer.convert(part, options))) continue;
+        if (!best || end - start > best.length) best = { start, end, length: end - start };
+      }
+    }
+    if (!best) continue;
+    const previous = spans[spans.length - 1];
+    if (previous && best.start <= previous.end) previous.end = Math.max(previous.end, best.end);
+    else spans.push({ start: best.start, end: best.end });
+  }
+  return spans;
 }
 
 function normalizeInputSymbols(text) {

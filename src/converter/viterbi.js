@@ -66,6 +66,11 @@ for (const group of DAKUTEN_GROUPS) {
 // win among the variants themselves.
 const DAKUTEN_VARIANT_COST = 1200;
 const DAKUTEN_FALLBACK_EXACT_COST = 6000;
+// The fallback exists for input surfaces without dakuten keys, so it only has
+// to reach word-sized readings; longer spans are segmentation work, and
+// enumerating their toggles costs far more than it can ever save.
+const MAX_DAKUTEN_READING_LENGTH = 8;
+const MAX_DAKUTEN_POSITIONS = 4;
 const MAX_DAKUTEN_VARIANTS = 32;
 
 function dakutenVariants(reading) {
@@ -74,37 +79,27 @@ function dakutenVariants(reading) {
   for (let i = 0; i < chars.length; i += 1) {
     if (DAKUTEN_ALTERNATIVES.has(chars[i])) positions.push(i);
   }
-  if (positions.length === 0) return [];
+  if (positions.length === 0 || positions.length > MAX_DAKUTEN_POSITIONS) return [];
   const variants = [];
-  if (positions.length > 6) {
-    // Too many combinations to enumerate; single toggles only.
-    for (const pos of positions) {
-      for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
-        const next = chars.slice();
-        next[pos] = alt;
-        variants.push({ reading: next.join(''), toggles: 1 });
-      }
-    }
-    return variants.slice(0, MAX_DAKUTEN_VARIANTS);
-  }
-  const walk = (pi, current, toggles) => {
-    if (pi === positions.length) {
-      if (toggles > 0) variants.push({ reading: current.join(''), toggles });
+  const walk = (index, toggles) => {
+    if (index === positions.length) {
+      if (toggles > 0) variants.push({ reading: chars.join(''), toggles });
       return;
     }
-    const pos = positions[pi];
-    walk(pi + 1, current, toggles);
-    for (const alt of DAKUTEN_ALTERNATIVES.get(chars[pos])) {
-      const next = current.slice();
-      next[pos] = alt;
-      walk(pi + 1, next, toggles + 1);
+    const position = positions[index];
+    const original = chars[position];
+    walk(index + 1, toggles);
+    for (const alternative of DAKUTEN_ALTERNATIVES.get(original)) {
+      chars[position] = alternative;
+      walk(index + 1, toggles + 1);
     }
+    chars[position] = original;
   };
-  walk(0, chars, 0);
+  walk(0, 0);
   // Fewer toggles are cheaper, so order by toggles before applying the cap:
   // the cap must never drop a low-toggle variant in favour of a costly one.
   variants.sort((a, b) => a.toggles - b.toggles);
-  return variants.slice(0, MAX_DAKUTEN_VARIANTS);
+  return variants.length > MAX_DAKUTEN_VARIANTS ? variants.slice(0, MAX_DAKUTEN_VARIANTS) : variants;
 }
 
 function isAscii(char) {
@@ -133,7 +128,7 @@ function buildEdges(text, dictionary, position) {
     // name/rare-word class as described at DAKUTEN_FALLBACK_EXACT_COST.
     const cheapestExact = candidates.reduce(
       (min, candidate) => Math.min(min, candidate.cost ?? 1000), Infinity);
-    if (reading.length >= 2 && cheapestExact >= DAKUTEN_FALLBACK_EXACT_COST) {
+    if (reading.length >= 2 && reading.length <= MAX_DAKUTEN_READING_LENGTH && cheapestExact >= DAKUTEN_FALLBACK_EXACT_COST) {
       // The same word can surface from several variants; keep the cheapest.
       const bestByKey = new Map();
       for (const variant of dakutenVariants(reading)) {
@@ -192,9 +187,9 @@ function buildEdges(text, dictionary, position) {
   return edges;
 }
 
-function connectionCost(previous, current, dictionary) {
+function connectionCost(previousRightId, currentLeftId, dictionary) {
   if (typeof dictionary.connectionCost === 'function') {
-    return dictionary.connectionCost(previous?.rightId ?? 0, current.leftId ?? 0) || 0;
+    return dictionary.connectionCost(previousRightId, currentLeftId) || 0;
   }
   return 0;
 }
@@ -205,41 +200,57 @@ function viterbi(text, dictionary) {
   // The future connection cost depends on the previous node's rightId, so a
   // single best path per character position is insufficient. Keep the best
   // state for every rightId at each position.
-  const bestAt = Array.from({ length: text.length + 1 }, () => new Map());
-  bestAt[0].set(0, { cost: 0, previous: null, edge: null, last: { rightId: 0 } });
+  const length = text.length;
+  const rightSize = Number.isInteger(dictionary.rightSize) && dictionary.rightSize > 0 ? dictionary.rightSize : 4096;
+  const lists = Array.from({ length: length + 1 }, () => []);
+  const marks = new Uint32Array(rightSize);
+  const nodes = new Array(rightSize);
+  const start = { cost: 0, previous: null, edge: null, rightId: 0 };
+  lists[0].push(start);
+  marks[0] = 1;
+  nodes[0] = start;
 
-  for (let position = 0; position < text.length; position += 1) {
-    const states = bestAt[position];
-    if (states.size === 0) continue;
-
+  for (let position = 0; position < length; position += 1) {
+    const states = lists[position];
+    const stateCount = states.length;
+    if (stateCount === 0) continue;
     for (const edge of buildEdges(text, dictionary, position)) {
       let bestPrevious = null;
       let bestScore = Infinity;
-      for (const state of states.values()) {
-        const score = state.cost + edge.cost + connectionCost(state.last, edge, dictionary);
+      const edgeCost = edge.cost;
+      for (let i = 0; i < stateCount; i += 1) {
+        const state = states[i];
+        const score = state.cost + edgeCost + connectionCost(state.rightId, edge.leftId, dictionary);
         if (score < bestScore) {
           bestScore = score;
           bestPrevious = state;
         }
       }
-      const existing = bestAt[edge.end].get(edge.rightId);
-      if (bestPrevious && (!existing || bestScore < existing.cost)) {
-        bestAt[edge.end].set(edge.rightId, {
-          cost: bestScore,
-          previous: bestPrevious,
-          edge,
-          last: edge
-        });
+      if (bestPrevious === null) continue;
+      const rightId = edge.rightId;
+      const endMark = edge.end + 1;
+      if (marks[rightId] === endMark) {
+        const existing = nodes[rightId];
+        if (bestScore < existing.cost) {
+          existing.cost = bestScore;
+          existing.previous = bestPrevious;
+          existing.edge = edge;
+        }
+      } else {
+        marks[rightId] = endMark;
+        const node = { cost: bestScore, previous: bestPrevious, edge, rightId };
+        nodes[rightId] = node;
+        lists[edge.end].push(node);
       }
     }
   }
 
   let result = null;
   let finalCost = Infinity;
-  for (const state of bestAt[text.length].values()) {
-    const eosCost = state.cost + (typeof dictionary.connectionCost === 'function'
-      ? dictionary.connectionCost(state.last?.rightId ?? 0, 0)
-      : 0);
+  const finals = lists[length];
+  for (let i = 0; i < finals.length; i += 1) {
+    const state = finals[i];
+    const eosCost = state.cost + connectionCost(state.rightId, 0, dictionary);
     if (eosCost < finalCost) {
       finalCost = eosCost;
       result = state;

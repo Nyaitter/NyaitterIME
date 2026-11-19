@@ -4,6 +4,9 @@ const MAGIC_V2 = 'NYIME002';
 const MAGIC_V3 = 'NYIME003';
 const MAGIC_V4 = 'NYIME004';
 const MAGIC_V5 = 'NYIME005';
+const HASH_OFFSET = 0x811c9dc5;
+const HASH_PRIME = 0x01000193;
+const CACHE_LIMIT = 16384;
 let decoder = null;
 
 function decodeUtf8(bytes) {
@@ -78,7 +81,13 @@ class RuntimeDictionary {
     }
     this.index = this.version >= 5 ? null : new Map();
     this.cache = new Map();
+    this.hash = null;
+    this.hashMask = 0;
+    this.groupOffsets = null;
+    this.encoder = null;
+    this.encoded = null;
     if (this.version < 5) this.#buildIndex();
+    else this.#buildHashIndex();
   }
 
   #buildIndex() {
@@ -104,8 +113,43 @@ class RuntimeDictionary {
     if (this.version >= 3) this.groupCount = groups;
   }
 
+  #buildHashIndex() {
+    let size = 1;
+    while (size < this.groupCount * 1.7) size <<= 1;
+    const table = new Uint32Array(size);
+    const mask = size - 1;
+    const { bytes, view } = this;
+    const { groupCount, groupOffsetsOffset, lexiconOffset } = this;
+    let offsets = null;
+    if (groupOffsetsOffset % 4 === 0) offsets = new Uint32Array(bytes.buffer, bytes.byteOffset + groupOffsetsOffset, groupCount);
+    for (let i = 0; i < groupCount; i += 1) {
+      const relative = offsets ? offsets[i] : view.getUint32(groupOffsetsOffset + i * 4, true);
+      const offset = lexiconOffset + relative;
+      const length = view.getUint16(offset, true);
+      const end = offset + 4 + length;
+      let hash = HASH_OFFSET;
+      let b = offset + 4;
+      for (; b + 3 < end; b += 4) {
+        hash ^= bytes[b] | (bytes[b + 1] << 8) | (bytes[b + 2] << 16) | (bytes[b + 3] << 24);
+        hash = Math.imul(hash, HASH_PRIME);
+      }
+      for (; b < end; b += 1) {
+        hash ^= bytes[b];
+        hash = Math.imul(hash, HASH_PRIME);
+      }
+      hash ^= length;
+      let slot = hash >>> 0 & mask;
+      while (table[slot] !== 0) slot = slot + 1 & mask;
+      table[slot] = i + 1;
+    }
+    this.hash = table;
+    this.hashMask = mask;
+    this.groupOffsets = offsets;
+  }
+
   lookup(reading) {
-    if (this.cache.has(reading)) return this.cache.get(reading);
+    const cached = this.cache.get(reading);
+    if (cached !== undefined) return cached;
     const groupOffset = this.version >= 5 ? this.#findGroupOffset(reading) : this.index.get(reading);
     if (groupOffset === undefined) {
       this.#cache(reading, []);
@@ -133,11 +177,55 @@ class RuntimeDictionary {
   }
 
   #cache(reading, candidates) {
-    if (this.cache.size >= 4096) this.cache.clear();
+    if (this.cache.size >= CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value);
     this.cache.set(reading, candidates);
   }
 
   #findGroupOffset(reading) {
+    if (this.hash && typeof TextEncoder === 'function') return this.#findGroupOffsetHashed(reading);
+    return this.#findGroupOffsetBinary(reading);
+  }
+
+  #findGroupOffsetHashed(reading) {
+    if (!this.encoder) this.encoder = new TextEncoder();
+    let buffer = this.encoded;
+    if (!buffer || buffer.length < reading.length * 3) {
+      buffer = new Uint8Array(reading.length * 3);
+      this.encoded = buffer;
+    }
+    const length = this.encoder.encodeInto(reading, buffer).written;
+    if (length === 0) return undefined;
+    let hash = HASH_OFFSET;
+    let b = 0;
+    for (; b + 3 < length; b += 4) {
+      hash ^= buffer[b] | (buffer[b + 1] << 8) | (buffer[b + 2] << 16) | (buffer[b + 3] << 24);
+      hash = Math.imul(hash, HASH_PRIME);
+    }
+    for (; b < length; b += 1) {
+      hash ^= buffer[b];
+      hash = Math.imul(hash, HASH_PRIME);
+    }
+    hash ^= length;
+    const { bytes, view, lexiconOffset, groupOffsets } = this;
+    let slot = hash >>> 0 & this.hashMask;
+    for (;;) {
+      const entry = this.hash[slot];
+      if (entry === 0) return undefined;
+      const relative = groupOffsets ? groupOffsets[entry - 1] : view.getUint32(this.groupOffsetsOffset + (entry - 1) * 4, true);
+      const offset = lexiconOffset + relative;
+      const readingLength = view.getUint16(offset, true);
+      if (readingLength === length) {
+        let same = true;
+        for (let b = 0; b < length; b += 1) {
+          if (bytes[offset + 4 + b] !== buffer[b]) { same = false; break; }
+        }
+        if (same) return offset;
+      }
+      slot = slot + 1 & this.hashMask;
+    }
+  }
+
+  #findGroupOffsetBinary(reading) {
     let low = 0;
     let high = this.groupCount - 1;
     while (low <= high) {

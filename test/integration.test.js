@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { Japanizer, convert, toHiragana } = require('../src');
+const { Japanizer, convert, createSession, toHiragana } = require('../src');
 
 test('default conversion returns the top Japanese candidate', () => {
   const ime = new Japanizer();
@@ -57,4 +57,13 @@ test('gives digit spans numeral connections', () => {
   assert.equal(convert('100en'), '100円');
   assert.equal(convert('5ji'), '5時');
   assert.equal(convert('3hon'), '3本');
+});
+
+test('incremental input matches converting the whole text', () => {
+  const session = createSession();
+  let buffer = '';
+  for (const char of 'kyouhaiitenkidesune') {
+    buffer += char;
+    assert.equal(session.convert(buffer), convert(buffer));
+  }
 });
